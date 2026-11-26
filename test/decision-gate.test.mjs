@@ -16,11 +16,13 @@ function host({ modern = true, fallback = null, settings = false, remoteHang = n
   let now = 0, nextTimer = 0;
   const timers = new Map(), remoteSignals = [];
   class Element {
-    constructor(tag) { this.tag = tag; this.attrs = {}; this.children = []; this.listeners = {}; this.classList = { add() {} }; }
-    append(...nodes) { this.children.push(...nodes); }
-    replaceChildren(...nodes) { this.children = nodes; }
+    constructor(tag) { this.tag = tag; this.attrs = {}; this.children = []; this.listeners = {}; this.style = {}; this.parent = null; this.classList = { add() {}, remove() {} }; }
+    append(...nodes) { for (const n of nodes) { if (n instanceof Element) n.parent = this; this.children.push(n); } }
+    replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
     addEventListener(name, callback) { this.listeners[name] = callback; }
     setAttribute(name, value) { this.attrs[name] = value; }
+    contains() { return false; }
+    remove() { if (this.parent) this.parent.children = this.parent.children.filter((n) => n !== this); }
     get childElementCount() { return this.children.filter((n) => n instanceof Element).length; }
   }
   const root = new Element('root');
@@ -82,7 +84,8 @@ function host({ modern = true, fallback = null, settings = false, remoteHang = n
 test('lists share models, requires exact source, saves and returns it in the verdict', async () => {
   const h = host();
   const list = await h.tool('list_rules');
-  assert.deepEqual(list.result.availableModels.map((m) => m.agentDeviceId), [null, 'share:one']);
+  assert.deepEqual(list.result.availableModels.filter((m) => m.id === 'example').map((m) => m.agentDeviceId), [null, 'share:one']);
+  assert.equal(list.result.availableModels.some((m) => m.agent === 'acp' && m.id === 'gemini-4-hydrogen'), true);
   assert.equal((await h.tool('set_fallback_model', { model: 'example', agent: 'codex', providerId: 'account' })).errorCode, 'MODEL_AMBIGUOUS');
   const saved = await h.tool('set_fallback_model', { model: 'example', agent: 'codex', providerId: 'account', agentDeviceId: 'share:one' });
   assert.equal(saved.ok, true);
@@ -100,7 +103,7 @@ test('an explicit local choice stays local when an identical shared model exists
 
 test('older hosts preserve local rules and cannot execute a saved share as a local namesake', async () => {
   const h = host({ modern: false, fallback: { agentKind: 'codex', providerId: 'account', model: 'example', agentDeviceId: 'share:one' } });
-  assert.equal((await h.tool('list_rules')).result.availableModels.length, 1);
+  assert.equal((await h.tool('list_rules')).result.availableModels.filter((m) => m.id === 'example').length, 1);
   assert.equal(h.requests.some((url) => url.includes('agent_device_id')), false);
   assert.equal(await h.event(), undefined);
   assert.equal((await h.tool('set_fallback_model', { model: 'example', agentDeviceId: null })).ok, true);
@@ -108,16 +111,23 @@ test('older hosts preserve local rules and cannot execute a saved share as a loc
 });
 
 // Settings save is a different production consumer from the Agent tool: exercise the real
-// fallback button callback, KV merge and reopening the host picker. No model/service calls.
+// fallback button -> popover -> host picker flow, KV merge and reopening the host picker.
 test('settings save and reopen retain the share source and its display name', async () => {
   const h = host({ settings: true });
   await h.ready;
   const nodes = (node) => node && typeof node === 'object' ? [node, ...node.children.flatMap(nodes)] : [];
   const button = () => nodes(h.root).find((node) => node.attrs?.class?.startsWith('mbtn'));
-  await button().listeners.click();
+  const hostButton = () => nodes(h.root).find((node) => node.attrs?.class === 'mpop-host');
+
+  button().listeners.click();
+  await h.tick();
+  await hostButton().listeners.click();
   assert.equal(h.config().fallback.agentDeviceId, 'share:one');
   assert.equal(h.config().fallback.locationName, 'Shared');
-  await button().listeners.click();
+
+  button().listeners.click();
+  await h.tick();
+  await hostButton().listeners.click();
   assert.equal(h.pickerRequests[1].allowRemote, true);
   assert.equal(h.pickerRequests[1].initial.agentDeviceId, 'share:one');
   assert.equal(h.pickerRequests[1].initial.model, 'example');
@@ -137,7 +147,7 @@ for (const remoteHang of ['fetch', 'body']) {
     await h.tick(2999);
     assert.equal(finished, false);
     await h.tick(1);
-    assert.deepEqual((await list).result.availableModels.map((m) => m.agentDeviceId), [null, 'share:one']);
+    assert.deepEqual((await list).result.availableModels.filter((m) => m.id === 'example').map((m) => m.agentDeviceId), [null, 'share:one']);
     assert.equal(h.remoteSignals[0].aborted, true);
     assert.equal(h.pendingTimers(), 0);
 
@@ -164,7 +174,11 @@ for (const remoteHang of ['fetch', 'body']) {
     assert.equal(h.pendingTimers(), 0);
     const nodes = (node) => node && typeof node === 'object' ? [node, ...node.children.flatMap(nodes)] : [];
     const button = () => nodes(h.root).find((node) => node.attrs?.class?.startsWith('mbtn'));
-    const save = button().listeners.click();
+    const hostButton = () => nodes(h.root).find((node) => node.attrs?.class === 'mpop-host');
+
+    button().listeners.click();
+    await h.tick();
+    const save = hostButton().listeners.click();
     await h.tick();
     assert.equal(h.pendingTimers(), 1);
     await h.tick(3000);
