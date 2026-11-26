@@ -2,9 +2,9 @@
   "schemaVersion": 3,
   "id": "decision-gate",
   "name": "决策闸门",
-  "description": "按你写的规则做决定：开新任务时替你选模型，自动化和例行任务运行前判断这次要不要跑。判断交给决策模型（OpenAI Decisions / Jev），不占用 Agent 回合。",
-  "whenToUse": "用户想让新任务自动选模型、按任务内容换模型或推理强度，或想在自动化/例行任务运行前自动跳过无事可做的运行时找我；也可以帮用户查看、添加、修改、删除这些规则",
-  "version": "0.5.1",
+  "description": "按你写的规则做决定：开新任务时替你选模型，自动化和例行任务运行前判断这次要不要跑；支持针对文本、图像、视频、音频和 PDF 评估带类型的问题（是/否、单选、评分标准打分）。判断交给决策模型（Gemini Decision / OpenAI Decisions / Jev），不占用 Agent 回合。",
+  "whenToUse": "用户想让新任务自动选模型、按任务内容换模型或推理强度、在自动化或例行任务运行前自动跳过无事可做的运行，或需要用决策模型（Gemini Decision / OpenAI Decisions / Jev）针对文本、图像、视频、音频和 PDF 评估带类型的问题（是/否 noul、单选 choice、评分 score）时找我；也可查看、添加、修改、删除规则",
+  "version": "0.6.0",
   "minCindyVersion": "0.1.122",
   "entry": "main.js",
   "subscribe": {
@@ -22,9 +22,23 @@
   "network": {
     "hosts": [
       "api.typesafe.ai",
-      "api.openai.com"
+      "api.openai.com",
+      "generativelanguage.googleapis.com"
     ],
     "secrets": [
+      {
+        "key": "gemini_api_key",
+        "label": "Gemini API Key",
+        "hint": "Used to call the Gemini Decisions API (gemini-decision-1)",
+        "url": "https://aistudio.google.com/apikey",
+        "inject": {
+          "header": "x-goog-api-key",
+          "format": "{value}",
+          "hosts": [
+            "generativelanguage.googleapis.com"
+          ]
+        }
+      },
       {
         "key": "typesafe_api_key",
         "label": "TypeSafe API Key",
@@ -57,7 +71,7 @@
     "requires": []
   },
   "settingsHtml": "settings.html",
-  "releaseNotes": "模型规则支持选择分享供应商及其他电脑上的模型；保存并保留运行来源，同名模型不再混用。需要支持远程路由的 Cindy 版本，旧版仍可使用本机模型。",
+  "releaseNotes": "支持 Google Gemini Decision (gemini-decision-1) 决策模型；支持针对文本、图像、视频、音频和 PDF 评估带类型的问题（是/否 noul、单选 choice、评分标准打分 score）。",
   "tools": [
     {
       "name": "list_rules",
@@ -69,7 +83,7 @@
     },
     {
       "name": "save_rule",
-      "description": "添加或修改一条规则（传 id 即修改）。规则格式：如果 question 符合，就用 model（开新任务时）或跳过这次（运行前）。从上到下第一条符合的生效。返回保存后的规则和生效条件说明，请转告用户。",
+      "description": "添加或修改一条规则（传 id 即修改）。规则支持是/否（noul）、单选（choice）和评分（score）问题类型；从上到下第一条符合的生效。返回保存后的规则和生效条件说明，请转告用户。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -86,9 +100,37 @@
             ],
             "description": "什么时候：will-start-task=开新任务时（只判断第一条消息一次），will-schedule-run=自动化运行前，will-routine-run=伙伴例行任务运行前"
           },
+          "type": {
+            "type": "string",
+            "enum": [
+              "noul",
+              "choice",
+              "score"
+            ],
+            "description": "问题类型：noul=是/否（默认，返回 0.01–0.99 校准概率），choice=单选（评估 2–255 个选项），score=评分标准打分（评估 2–255 个有序等级，0 为最低）"
+          },
           "question": {
             "type": "string",
-            "description": "条件，用用户的说法写，例如「在写代码或改 bug」「指令写明这次不用运行」"
+            "description": "条件或问题说明，用用户的说法写，例如「在写代码或改 bug」「属于哪类任务」"
+          },
+          "criteria": {
+            "type": [
+              "object",
+              "array"
+            ],
+            "description": "评估标准：noul 可选填 {\"true_description\":\"成立标准\",\"false_description\":\"不成立标准\"}；choice 必填 {\"选项ID\":\"选项说明\"}（2–255 项）；score 必填从低到高排列的等级说明数组 [\"等级0说明\",\"等级1说明\",...]（2–255 项）"
+          },
+          "targetOption": {
+            "type": "string",
+            "description": "仅 choice 规则可选：命中哪个选项 ID 时触发该规则的 model 或跳过运行"
+          },
+          "optionRoutes": {
+            "type": "object",
+            "description": "仅 will-start-task 的 choice 规则可选：按选项 ID 映射各自的路由模型 {\"选项ID\":{\"model\":\"...\",\"agent\":\"...\",\"providerId\":\"...\",\"effort\":\"...\",\"agentDeviceId\":null}}"
+          },
+          "minScore": {
+            "type": "number",
+            "description": "仅 score 规则可选：预期加权分数达到多少时触发该规则（范围 0 到 等级数-1）"
           },
           "model": {
             "type": "string",
@@ -136,7 +178,7 @@
     },
     {
       "name": "set_fallback_model",
-      "description": "设置保底模型：没有条件符合或判断失败时用它。没有保底模型时，新任务的模型选择器里不会出现这个插件的模型。",
+      "description": "设置保底模型：没有条件符合或判断失败时用它（也可顺便切换判断用模型 provider/judgeModel）。没有保底模型时，新任务的模型选择器里不会出现这个插件的模型。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -159,6 +201,19 @@
           "threshold": {
             "type": "number",
             "description": "可选，0.5–0.9。判断把握达到它才算条件符合，默认 0.6"
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "gemini",
+              "openai",
+              "jev"
+            ],
+            "description": "可选，切换判断用的决策模型服务（gemini / openai / jev）"
+          },
+          "judgeModel": {
+            "type": "string",
+            "description": "可选，指定判断模型版本（如 gemini-decision-1 / gpt-6-luna / jev-latest）"
           },
           "agentDeviceId": {
             "type": [
@@ -186,6 +241,48 @@
         },
         "required": [
           "id"
+        ]
+      }
+    },
+    {
+      "name": "evaluate",
+      "description": "使用决策模型（Gemini Decision gemini-decision-1 / TypeSafe Jev / OpenAI Decisions）针对共享输入（支持文本、图像、视频、音频和 PDF）并行评估 1–1000 个带类型的问题（noul 是/否、choice 单选、score 评分标准打分），以零输出 token 返回校准概率、最优选项或预期加权分数以及置信度（confidence）。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": [
+              "string",
+              "object",
+              "array"
+            ],
+            "description": "共享输入材料：可传纯文本字符串，或单块/多块内容数组。内容块支持：{type:\"text\",text:\"...\"}; {type:\"image\"|\"video\"|\"audio\"|\"document\", data:\"<base64或dataURL>\" 或 uri:\"<https地址或Files API URI>\" 或 path:\"<当前工作目录相对路径>\", mime_type:\"image/jpeg|video/mp4|audio/wav|application/pdf等\", resolution?:\"low\"|\"medium\"|\"high\"|\"ultra_high\"（仅image/video支持，ultra_high仅image支持）}"
+          },
+          "questions": {
+            "type": "object",
+            "description": "要评估的问题字典（键为 1–64 位 [A-Za-z0-9_-]+，值为问题定义）：{type:\"noul\"|\"choice\"|\"score\", instructions:\"问题文本\", criteria?: noul可选{true_description,false_description} / choice必填{选项ID:说明} / score必填[\"等级0\",...]}"
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "gemini",
+              "openai",
+              "jev"
+            ],
+            "description": "可选，指定决策模型服务（gemini=Gemini Decision 1，jev=TypeSafe Jev，openai=OpenAI Decisions）；不传默认使用当前配置的判断模型（含多模态音频/视频/PDF输入时优先使用已配置 Key 的 Gemini Decision）"
+          },
+          "model": {
+            "type": "string",
+            "description": "可选，覆盖决策模型版本，如 gemini-decision-1、jev-latest、gpt-6-luna"
+          },
+          "cindy_handoff_files": {
+            "type": "array",
+            "description": "系统保留：用户在对话中附带的 PDF/非媒体文件交接引用，由宿主注入"
+          }
+        },
+        "required": [
+          "input",
+          "questions"
         ]
       }
     }
